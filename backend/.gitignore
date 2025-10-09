@@ -1,0 +1,17 @@
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+node_modules
+dist
+tstex_modules
+output
+uploads
+LATEX_FIX_SUMMARY.md
+README_RESUME_API.md
+TEST_EXAMPLES.md
+test-api.sh
+package-lock.json
+MODEL_FIX_FINAL.md
+MODEL_FIX_SUMMARY.md
