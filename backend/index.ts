@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import bodyParser from "body-parser";
+import cookieParser from "cookie-parser";
 import cors from "cors";
 import express, { type Express, type Request, type Response } from "express";
 import helmet from "helmet";
@@ -10,7 +11,6 @@ import { initDB } from "./src/common/services/database.services";
 import { initPassport } from "./src/common/services/passport-jwt.services";
 import routes from "./src/routes";
 import { type IUser } from "./src/user/user.dto";
-import { perplexitySearch } from "./src/common/services/perplexity.services";
 
 
 declare global {
@@ -32,6 +32,7 @@ declare global {
   credentials: true // allow credentials
 }));
   app.use(helmet()) 
+  app.use(cookieParser());
   app.use(bodyParser.json());
 
 
@@ -41,7 +42,7 @@ declare global {
   app.use(morgan("dev")); 
   const initApp = async (): Promise<void> => {
     // init mongodb
-   // await initDB();
+    await initDB();
    // await perplexitySearch(["what is the full form of cv","what is the full form of ai"]);
     // passport init
     initPassport();

@@ -1,18 +1,22 @@
 import fs from 'fs';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
+import { Types } from 'mongoose';
 
 import mammoth from 'mammoth';
 import Perplexity from '@perplexity-ai/perplexity_ai';
+import ResumeModel from './resume.schema';
+import { IResume } from './resume.dto';
 
 export interface ResumeOptimizationRequest {
     resumeFile: Express.Multer.File;
     jobDescription: string;
+    userId: Types.ObjectId;
 }
 
 export interface ResumeOptimizationResult {
     success: boolean;
-    pdfPath?: string;
+    resume?: IResume;
     error?: string;
 }
 
@@ -604,7 +608,7 @@ export class ResumeOptimizationService {
             // Save LaTeX content to file and return LaTeX path (skip PDF compilation for now)
             fs.writeFileSync(latexFilePath, latexContent, 'utf8');
 
-            return latexFilePath;
+                return latexFilePath;
         } catch (error) {
             // Clean up files on error
             this.cleanupLaTeXFiles(latexFilePath);
@@ -642,7 +646,20 @@ export class ResumeOptimizationService {
      * Main method to process resume optimization request
      */
     async processResumeOptimization(request: ResumeOptimizationRequest): Promise<ResumeOptimizationResult> {
+        let resumeRecord: IResume | null = null;
+        
         try {
+            // Create initial resume record
+            resumeRecord = await ResumeModel.create({
+                user: request.userId,
+                originalFileName: request.resumeFile.originalname,
+                jobDescription: request.jobDescription,
+                extractedText: '',
+                extractedContacts: {},
+                optimizedLatex: '',
+                status: 'processing'
+            });
+
             // Step 1: Extract text from resume file
             console.log('Extracting text from resume...');
             let resumeText = await this.extractResumeText(request.resumeFile);
@@ -665,6 +682,12 @@ export class ResumeOptimizationService {
                 resumeText = this.buildFallbackResumeText(contacts);
             }
 
+            // Update resume record with extracted data
+            await ResumeModel.findByIdAndUpdate(resumeRecord._id, {
+                extractedText: resumeText,
+                extractedContacts: contacts
+            });
+
             // Step 2: Send to AI for optimization (with preservation note)
             console.log('Sending to AI for optimization...');
             let optimizedLaTeX = await this.optimizeResumeWithAI(resumeText, request.jobDescription, contacts);
@@ -676,23 +699,53 @@ export class ResumeOptimizationService {
             optimizedLaTeX = this.enforceContactLinksInLatex(optimizedLaTeX, contacts);
             optimizedLaTeX = this.sanitizeLatexForPagination(optimizedLaTeX);
 
-            // Step 3: Save LaTeX to file (PDF compilation disabled)
-            console.log('Saving LaTeX to file...');
-            const pdfPath = await this.compileLaTeXToPDF(optimizedLaTeX);
+            // Update resume record with final LaTeX and mark as completed
+            await ResumeModel.findByIdAndUpdate(resumeRecord._id, {
+                optimizedLatex: optimizedLaTeX,
+                status: 'completed'
+            });
+            
+            // Fetch the updated record
+            resumeRecord = await ResumeModel.findById(resumeRecord._id);
 
             console.log('Resume optimization completed successfully');
             return {
                 success: true,
-                pdfPath: pdfPath
+                resume: resumeRecord || undefined
             };
 
         } catch (error) {
             console.error('Resume optimization failed:', error);
+            
+            // Update resume record with error if it exists
+            if (resumeRecord) {
+                await ResumeModel.findByIdAndUpdate(resumeRecord._id, {
+                    status: 'failed',
+                    error: error instanceof Error ? error.message : 'Unknown error occurred'
+                });
+            }
+            
             return {
                 success: false,
                 error: error instanceof Error ? error.message : 'Unknown error occurred'
             };
         }
+    }
+
+    /**
+     * Get all resumes for a user
+     */
+    async getUserResumes(userId: Types.ObjectId): Promise<IResume[]> {
+        return await ResumeModel.find({ user: userId })
+            .sort({ createdAt: -1 })
+            .lean();
+    }
+
+    /**
+     * Get a specific resume by ID
+     */
+    async getResumeById(resumeId: string, userId: Types.ObjectId): Promise<IResume | null> {
+        return await ResumeModel.findOne({ _id: resumeId, user: userId }).lean();
     }
 
     /**

@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 
 export const initDB = async (): Promise<boolean> => {
   return await new Promise((resolve, reject) => {
-    const mongodbUri = process.env.MONGODB_URI ?? "";
+    const mongodbUri = process.env.MONGODB_URI?? "";
     console.log(mongodbUri);
     if (mongodbUri === "") throw new Error("mongod db uri not found!");
     // mongoose.set("debug", true);

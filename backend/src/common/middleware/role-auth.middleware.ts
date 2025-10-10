@@ -24,7 +24,7 @@ export const roleAuth = (roles: IUser["role"][], publicRoutes: string[] = []) =>
       }
       const token =
         req.headers.authorization?.replace("Bearer ", "") ??
-        req.cookies.accessToken;
+        req.cookies?.accessToken;
       if (!token) {
         throw createHttpError(401, {
           message: `Invalid token`,

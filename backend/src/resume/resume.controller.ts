@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { ResumeOptimizationService } from './resume.service';
 import { ResponseHelper } from '../common/helper/response.helper';
+import { Types } from 'mongoose';
 
 export class ResumeController {
     private resumeService: ResumeOptimizationService;
@@ -15,6 +16,13 @@ export class ResumeController {
      */
     optimizeResume = async (req: Request, res: Response): Promise<void> => {
         try {
+            // Get user ID from authenticated request
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                ResponseHelper.error(res, 'User not authenticated', 401);
+                return;
+            }
+
             // Validate request
             if (!req.file) {
                 ResponseHelper.error(res, 'Resume file is required', 400);
@@ -46,7 +54,8 @@ export class ResumeController {
             // Process the resume optimization
             const result = await this.resumeService.processResumeOptimization({
                 resumeFile: req.file,
-                jobDescription: req.body.jobDescription.trim()
+                jobDescription: req.body.jobDescription.trim(),
+                userId: new Types.ObjectId(userId)
             });
 
             if (!result.success) {
@@ -54,46 +63,64 @@ export class ResumeController {
                 return;
             }
 
-            // Send the optimized file as download (PDF or LaTeX)
-            const filePath = result.pdfPath!;
-            const isPDF = filePath.endsWith('.pdf');
-            const fileName = `optimized_resume_${Date.now()}.${isPDF ? 'pdf' : 'ltx'}`;
-
-            if (isPDF) {
-                res.setHeader('Content-Type', 'application/pdf');
-            } else {
-                res.setHeader('Content-Type', 'text/plain');
-            }
-            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-            
-            // Stream the file to the client
-            
-            const fs = require('fs');
-            const fileStream = fs.createReadStream(filePath);
-            
-            fileStream.on('error', (error: Error) => {
-                console.error('Error streaming file:', error);
-                ResponseHelper.error(res, 'Error sending file', 500);
-            });
-
-            fileStream.pipe(res);
-
-            // Clean up the file after sending (optional - you might want to keep it for a while)
-            fileStream.on('end', () => {
-                // Schedule cleanup after a delay to ensure file is sent
-                setTimeout(() => {
-                    try {
-                        fs.unlinkSync(filePath);
-                        console.log(`Cleaned up file: ${filePath}`);
-                    } catch (error) {
-                        console.warn(`Failed to cleanup file: ${filePath}`, error);
-                    }
-                }, 5000); // 5 second delay
+            // Return the resume data as JSON
+            ResponseHelper.success(res, {
+                message: 'Resume optimized successfully',
+                resume: result.resume
             });
 
         } catch (error) {
             console.error('Resume optimization controller error:', error);
             ResponseHelper.error(res, 'Internal server error', 500);
+        }
+    };
+
+    /**
+     * Get all resumes for the authenticated user
+     */
+    getUserResumes = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                ResponseHelper.error(res, 'User not authenticated', 401);
+                return;
+            }
+
+            const resumes = await this.resumeService.getUserResumes(new Types.ObjectId(userId));
+            ResponseHelper.success(res, resumes);
+        } catch (error) {
+            console.error('Get user resumes error:', error);
+            ResponseHelper.error(res, 'Failed to get resumes', 500);
+        }
+    };
+
+    /**
+     * Get a specific resume by ID
+     */
+    getResumeById = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const userId = (req as any).user?.id;
+            if (!userId) {
+                ResponseHelper.error(res, 'User not authenticated', 401);
+                return;
+            }
+
+            const { id } = req.params;
+            if (!id) {
+                ResponseHelper.error(res, 'Resume ID is required', 400);
+                return;
+            }
+
+            const resume = await this.resumeService.getResumeById(id, new Types.ObjectId(userId));
+            if (!resume) {
+                ResponseHelper.error(res, 'Resume not found', 404);
+                return;
+            }
+
+            ResponseHelper.success(res, resume);
+        } catch (error) {
+            console.error('Get resume by ID error:', error);
+            ResponseHelper.error(res, 'Failed to get resume', 500);
         }
     };
 
