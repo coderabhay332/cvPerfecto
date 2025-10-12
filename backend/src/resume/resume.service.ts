@@ -497,12 +497,79 @@ export class ResumeOptimizationService {
     }
 
     /**
+     * Post-processes LaTeX to remove obvious hallucinated content
+     */
+    private removeHallucinatedContent(latex: string, originalResume: string): string {
+        let out = latex;
+        
+        // Extract original content for comparison
+        const originalSections = this.extractResumeSections(originalResume);
+        
+        console.log('Original sections found:', Object.keys(originalSections));
+        console.log('Original projects content length:', originalSections.projects?.length || 0);
+        console.log('Original experience content length:', originalSections.experience?.length || 0);
+        
+        // Only remove sections if they are completely empty in original AND contain placeholder text
+        const hasPlaceholderText = (text: string) => {
+            const placeholderPatterns = [
+                /project name/i,
+                /company/i,
+                /duration/i,
+                /description:/i,
+                /contribution:/i,
+                /metrics:/i,
+                /achievement \d+/i,
+                /degree, institution/i
+            ];
+            return placeholderPatterns.some(pattern => pattern.test(text));
+        };
+        
+        // If original resume has no projects section AND AI output has placeholder text, remove it
+        if ((!originalSections.projects || originalSections.projects.trim().length === 0) && hasPlaceholderText(out)) {
+            console.log('Removing projects section due to placeholder text');
+            out = out.replace(/\\section\{[^}]*[Pp]rojects?[^}]*\}[\s\S]*?(?=\\section\{|\\end\{document\})/gi, '');
+        }
+        
+        // If original resume has no experience section AND AI output has placeholder text, remove it
+        if ((!originalSections.experience || originalSections.experience.trim().length === 0) && hasPlaceholderText(out)) {
+            console.log('Removing experience section due to placeholder text');
+            out = out.replace(/\\section\{[^}]*[Ee]xperience[^}]*\}[\s\S]*?(?=\\section\{|\\end\{document\})/gi, '');
+        }
+        
+        // If original resume has no achievements section AND AI output has placeholder text, remove it
+        if ((!originalSections.achievements || originalSections.achievements.trim().length === 0) && hasPlaceholderText(out)) {
+            console.log('Removing achievements section due to placeholder text');
+            out = out.replace(/\\section\{[^}]*[Aa]chievements?[^}]*\}[\s\S]*?(?=\\section\{|\\end\{document\})/gi, '');
+        }
+        
+        return out;
+    }
+
+    /**
      * Sends resume text and job description to AI for optimization
      * Returns optimized LaTeX resume content
      */
     async optimizeResumeWithAI(resumeText: string, jobDescription: string, contacts: ExtractedContacts): Promise<string> {
         const templateHint = this.templateLatex ? `\nFollow this LaTeX template structure (use its preamble and sectioning style):\n${this.templateLatex.slice(0, 1200)}\n...` : '';
-        const systemPrompt = `You are an expert ATS resume optimizer. I will provide the user's resume and the target job description. Generate a clean, professional LaTeX (.ltx) resume optimized for ATS — no explanations, no markdown.${templateHint}\nREQUIREMENTS:\n- Use a simple, compilable preamble with hyperref and geometry.\n- Organize with clear sections (SUMMARY, EDUCATION, TECHNICAL SKILLS, EXPERIENCE, PROJECTS, ACHIEVEMENTS).\n- Include a header (centered) with name and contact \\href links.\n- Avoid exotic packages and stick to those in the template.`;
+        const systemPrompt = `You are an expert ATS resume optimizer. I will provide the user's resume and the target job description. Generate a clean, professional LaTeX (.ltx) resume optimized for ATS — no explanations, no markdown.${templateHint}
+
+CRITICAL CONTENT RULES:
+- ONLY use information that is explicitly present in the provided resume content
+- DO NOT add, invent, or hallucinate any projects, experiences, skills, or achievements
+- DO NOT add any content that is not directly mentioned in the original resume
+- If information is missing from the resume, leave that section empty or omit it entirely
+- Focus on reorganizing and reformatting existing content for ATS optimization
+- Use the job description only to guide which existing content to emphasize, not to add new content
+- READ THE ACTUAL RESUME CONTENT CAREFULLY - extract real details like college names, project names, company names, job titles, etc.
+- DO NOT use placeholder text like "Project Name", "Company", "Duration" - use the actual information provided
+
+REQUIREMENTS:
+- Use a simple, compilable preamble with hyperref and geometry
+- Organize with clear sections (SUMMARY, EDUCATION, TECHNICAL SKILLS, EXPERIENCE, PROJECTS, ACHIEVEMENTS)
+- Include a header (centered) with name and contact \\href links
+- Avoid exotic packages and stick to those in the template
+- Only include sections that have actual content from the original resume
+- Extract and use REAL information from the resume content provided`;
         const userPrompt = `Resume Content:\n${resumeText}\n\nJob Description:\n${jobDescription}${this.buildContactPreservationNote(contacts)}`;
 
         // Try different model names in case one is not available
@@ -533,7 +600,9 @@ export class ResumeOptimizationService {
                         }
                     ],
                     max_tokens: 4000,
-                    temperature: 0.3
+                    temperature: 0.1,  // Lower temperature to reduce creativity and hallucination
+                    top_p: 0.8,        // Focus on more likely tokens
+                    frequency_penalty: 0.1  // Slight penalty for repetition (removed presence_penalty)
                 });
 
                 const messageContent = response.choices[0]?.message?.content;
@@ -585,6 +654,109 @@ export class ResumeOptimizationService {
         const hasEndDocument = content.includes('\\end{document}');
         
         return hasDocumentClass && hasEndDocument;
+    }
+
+    /**
+     * Validates that the AI output doesn't contain hallucinated content
+     * by checking if major sections contain content that wasn't in the original resume
+     */
+    private validateContentFidelity(aiOutput: string, originalResume: string): boolean {
+        // Extract key sections from AI output
+        const aiSections = this.extractResumeSections(aiOutput);
+        const originalSections = this.extractResumeSections(originalResume);
+        
+        // Check for major content additions that weren't in original
+        for (const [section, aiContent] of Object.entries(aiSections)) {
+            if (aiContent.trim().length === 0) continue;
+            
+            // For projects and experience sections, check if content is significantly different
+            if (section === 'projects' || section === 'experience') {
+                const originalContent = originalSections[section] || '';
+                if (originalContent.trim().length === 0 && aiContent.trim().length > 100) {
+                    console.warn(`Potential hallucination detected in ${section} section: content added where none existed`);
+                    return false;
+                }
+            }
+        }
+        
+        // Additional check: Look for common hallucination patterns
+        const hallucinationPatterns = [
+            /developed a \w+ application/i,
+            /created a \w+ system/i,
+            /built a \w+ platform/i,
+            /designed and implemented/i,
+            /led a team of \d+/i,
+            /managed \d+ projects/i,
+            /increased \w+ by \d+%/i
+        ];
+        
+        for (const pattern of hallucinationPatterns) {
+            if (pattern.test(aiOutput) && !pattern.test(originalResume)) {
+                console.warn('Potential hallucination detected: AI-generated content pattern found');
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * Extracts major sections from resume text for comparison
+     */
+    private extractResumeSections(text: string): Record<string, string> {
+        console.log('=== EXTRACTING RESUME SECTIONS ===');
+        console.log('Input text length:', text.length);
+        console.log('Input text preview:', text.substring(0, 500));
+        
+        const sections: Record<string, string> = {};
+        
+        // More comprehensive section patterns
+        const sectionPatterns = {
+            projects: /(?:projects?|portfolio|work samples?|personal projects?)[:\s]*([\s\S]*?)(?=\n(?:experience|education|skills|achievements|work|employment|$))/i,
+            experience: /(?:experience|work history|employment|professional experience|work experience|career)[:\s]*([\s\S]*?)(?=\n(?:education|projects|skills|achievements|$))/i,
+            education: /(?:education|academic|qualifications?|university|college|degree)[:\s]*([\s\S]*?)(?=\n(?:experience|projects|skills|achievements|work|$))/i,
+            skills: /(?:skills?|technical skills?|competencies|technologies?|programming languages?)[:\s]*([\s\S]*?)(?=\n(?:experience|education|projects|achievements|work|$))/i,
+            achievements: /(?:achievements?|awards?|honors?|certifications?|certificates?)[:\s]*([\s\S]*?)(?=\n(?:experience|education|projects|skills|work|$))/i
+        };
+        
+        for (const [section, pattern] of Object.entries(sectionPatterns)) {
+            const match = text.match(pattern);
+            if (match) {
+                sections[section] = match[1].trim();
+                console.log(`✅ Found ${section} section (${sections[section].length} chars):`, sections[section].substring(0, 200));
+            } else {
+                console.log(`❌ No ${section} section found with standard pattern`);
+            }
+        }
+        
+        // Also try to extract content without strict section headers
+        if (!sections.projects && text.toLowerCase().includes('project')) {
+            console.log('Looking for project mentions without section header...');
+            const projectMatches = text.match(/(?:project|built|developed|created)[^.!?]*[.!?]/gi);
+            if (projectMatches && projectMatches.length > 0) {
+                sections.projects = projectMatches.join(' ').trim();
+                console.log('✅ Found projects without section header:', sections.projects.substring(0, 200));
+            } else {
+                console.log('❌ No project mentions found');
+            }
+        }
+        
+        if (!sections.experience && (text.toLowerCase().includes('experience') || text.toLowerCase().includes('worked'))) {
+            console.log('Looking for experience mentions without section header...');
+            const expMatches = text.match(/(?:worked|experience|employed|job|position)[^.!?]*[.!?]/gi);
+            if (expMatches && expMatches.length > 0) {
+                sections.experience = expMatches.join(' ').trim();
+                console.log('✅ Found experience without section header:', sections.experience.substring(0, 200));
+            } else {
+                console.log('❌ No experience mentions found');
+            }
+        }
+        
+        console.log('=== SECTION EXTRACTION SUMMARY ===');
+        console.log('Total sections found:', Object.keys(sections).length);
+        console.log('Sections:', Object.keys(sections));
+        
+        return sections;
     }
 
     /**
@@ -661,26 +833,75 @@ export class ResumeOptimizationService {
             });
 
             // Step 1: Extract text from resume file
-            console.log('Extracting text from resume...');
+            console.log('=== RESUME EXTRACTION DEBUG ===');
+            console.log('File name:', request.resumeFile.originalname);
+            console.log('File size:', request.resumeFile.size, 'bytes');
+            console.log('File type:', request.resumeFile.mimetype);
+            
             let resumeText = await this.extractResumeText(request.resumeFile);
             const additionalUrls = await this.extractAdditionalUrls(request.resumeFile);
 
+            console.log('=== INITIAL EXTRACTION RESULTS ===');
+            console.log('Initial extracted text length:', resumeText.length);
+            console.log('Full extracted text:');
+            console.log('----------------------------------------');
+            console.log(resumeText);
+            console.log('----------------------------------------');
+
             // If no text found, try fallback via pdf.js
             if (!resumeText.trim() && path.extname(request.resumeFile.originalname).toLowerCase() === '.pdf') {
+                console.log('=== TRYING PDF.JS FALLBACK ===');
                 const fallbackText = await this.extractTextFromPDFViaPdfJs(request.resumeFile.buffer);
+                console.log('PDF.js fallback text length:', fallbackText.length);
+                console.log('PDF.js fallback text:');
+                console.log('----------------------------------------');
+                console.log(fallbackText);
+                console.log('----------------------------------------');
+                
                 if (fallbackText.trim()) {
                     resumeText = fallbackText;
+                    console.log('PDF.js fallback successful, using fallback text');
                 }
             }
 
             // Extract original contacts for exact preservation
             const contacts = this.extractContactsFromText(resumeText, additionalUrls);
-            console.log('Contacts:', contacts);
+            console.log('=== EXTRACTED CONTACTS ===');
+            console.log('Contacts:', JSON.stringify(contacts, null, 2));
+            console.log('Additional URLs:', additionalUrls);
 
             // If still empty text, build a minimal text from contacts so AI can proceed
             if (!resumeText.trim()) {
+                console.log('=== NO TEXT EXTRACTED - BUILDING FALLBACK ===');
                 resumeText = this.buildFallbackResumeText(contacts);
+                console.log('Fallback text:', resumeText);
             }
+
+            console.log('=== FINAL RESUME TEXT FOR AI ===');
+            console.log('Final resume text length:', resumeText.length);
+            console.log('Final resume text:');
+            console.log('========================================');
+            console.log(resumeText);
+            console.log('========================================');
+            
+            // Additional validation: Check if we have meaningful content
+            if (resumeText.length < 100) {
+                console.warn('⚠️  VERY SHORT RESUME TEXT - EXTRACTION MIGHT HAVE FAILED');
+            }
+            
+            // Check for common resume indicators
+            const hasName = /[A-Z][a-z]+ [A-Z][a-z]+/.test(resumeText);
+            const hasEmail = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(resumeText);
+            const hasPhone = /\+?\d[\d\s().-]{7,}\d/.test(resumeText);
+            
+            console.log('=== RESUME CONTENT ANALYSIS ===');
+            console.log('Has name pattern:', hasName);
+            console.log('Has email:', hasEmail);
+            console.log('Has phone:', hasPhone);
+            console.log('Text contains "project":', /project/i.test(resumeText));
+            console.log('Text contains "experience":', /experience/i.test(resumeText));
+            console.log('Text contains "education":', /education/i.test(resumeText));
+            console.log('Text contains "skill":', /skill/i.test(resumeText));
 
             // Update resume record with extracted data
             await ResumeModel.findByIdAndUpdate(resumeRecord._id, {
@@ -689,13 +910,58 @@ export class ResumeOptimizationService {
             });
 
             // Step 2: Send to AI for optimization (with preservation note)
-            console.log('Sending to AI for optimization...');
+            console.log('=== SENDING TO AI FOR OPTIMIZATION ===');
+            console.log('Resume text length being sent to AI:', resumeText.length);
+            console.log('Job description being sent to AI:', request.jobDescription);
+            console.log('Contacts being sent to AI:', JSON.stringify(contacts, null, 2));
+            
             let optimizedLaTeX = await this.optimizeResumeWithAI(resumeText, request.jobDescription, contacts);
+            
+            console.log('=== AI RESPONSE RECEIVED ===');
+            console.log('AI response length:', optimizedLaTeX.length);
+            console.log('AI response preview (first 1000 chars):');
+            console.log('----------------------------------------');
+            console.log(optimizedLaTeX.substring(0, 1000));
+            console.log('----------------------------------------');
+
+            // Step 2.5: Validate content fidelity to prevent hallucination
+            console.log('Validating content fidelity...');
+            const contentFidelityValid = this.validateContentFidelity(optimizedLaTeX, resumeText);
+            if (!contentFidelityValid) {
+                console.warn('Content fidelity validation failed - AI may have added hallucinated content');
+                // For now, we'll continue but log the warning
+                // In production, you might want to retry with different parameters or reject the result
+            }
+
+            // Step 2.6: Remove hallucinated content based on original resume
+            console.log('=== REMOVING HALLUCINATED CONTENT ===');
+            console.log('Original resume text for comparison:');
+            console.log('----------------------------------------');
+            console.log(resumeText);
+            console.log('----------------------------------------');
+            
+            optimizedLaTeX = this.removeHallucinatedContent(optimizedLaTeX, resumeText);
+            
+            console.log('=== AFTER HALLUCINATION REMOVAL ===');
+            console.log('Processed LaTeX length:', optimizedLaTeX.length);
+            console.log('Processed LaTeX preview:');
+            console.log('----------------------------------------');
+            console.log(optimizedLaTeX.substring(0, 1000));
+            console.log('----------------------------------------');
+            
+            // Step 2.6.5: Check if AI generated placeholder content and warn user
+            const hasPlaceholderContent = /(?:project name|company|duration|description:|contribution:|metrics:|achievement \d+|degree, institution)/i.test(optimizedLaTeX);
+            if (hasPlaceholderContent) {
+                console.warn('⚠️  AI GENERATED PLACEHOLDER CONTENT - RESUME EXTRACTION MIGHT HAVE FAILED');
+                console.log('Placeholder patterns found in AI output');
+            } else {
+                console.log('✅ No placeholder content detected in AI output');
+            }
 
             // Apply template preamble to stabilize structure
             optimizedLaTeX = this.applyTemplatePreamble(optimizedLaTeX);
 
-            // Step 2.5: Enforce preserved contact hrefs in LaTeX and sanitize pagination
+            // Step 2.7: Enforce preserved contact hrefs in LaTeX and sanitize pagination
             optimizedLaTeX = this.enforceContactLinksInLatex(optimizedLaTeX, contacts);
             optimizedLaTeX = this.sanitizeLatexForPagination(optimizedLaTeX);
 

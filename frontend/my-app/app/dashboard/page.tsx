@@ -21,8 +21,22 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!isAuthenticated) {
       router.push('/login');
+    } else {
+      // Check backend health when component mounts
+      checkBackendHealth();
     }
   }, [isAuthenticated, router]);
+
+  const checkBackendHealth = async () => {
+    try {
+      console.log('🏥 DASHBOARD: Checking backend health...');
+      const healthResponse = await resumeAPI.healthCheck();
+      console.log('✅ DASHBOARD: Backend is healthy:', healthResponse);
+    } catch (error) {
+      console.error('❌ DASHBOARD: Backend health check failed:', error);
+      setError('Backend server is not responding. Please check if the server is running.');
+    }
+  };
 
   const handleFileSelect = (file: File) => {
     setSelectedFile(file);
@@ -49,7 +63,16 @@ export default function DashboardPage() {
   };
 
   const handleOptimizeResume = async () => {
-    if (!validateForm()) return;
+    console.log('🎯 DASHBOARD: Starting resume optimization process...');
+    
+    if (!validateForm()) {
+      console.log('❌ DASHBOARD: Form validation failed');
+      return;
+    }
+
+    console.log('✅ DASHBOARD: Form validation passed');
+    console.log('📄 DASHBOARD: Selected file:', selectedFile?.name, selectedFile?.size, selectedFile?.type);
+    console.log('📝 DASHBOARD: Job description length:', jobDescription.length);
 
     setIsLoading(true);
     setError(null);
@@ -61,16 +84,26 @@ export default function DashboardPage() {
         resumeFile: selectedFile!,
       };
 
+      console.log('📤 DASHBOARD: Calling resumeAPI.optimizeResume...');
       const response = await resumeAPI.optimizeResume(data);
       
+      console.log('📥 DASHBOARD: Received response from API');
+      console.log('Response success:', response.success);
+      console.log('Response data:', response);
+      
       if (response.success) {
+        console.log('✅ DASHBOARD: Resume optimization successful');
         setResults(response.data);
       } else {
+        console.log('❌ DASHBOARD: Resume optimization failed - success: false');
         setError('Failed to optimize resume. Please try again.');
       }
     } catch (err: any) {
+      console.log('❌ DASHBOARD: Error during resume optimization');
+      
       setError(err.response?.data?.message || 'An error occurred while processing your resume.');
     } finally {
+      console.log('🏁 DASHBOARD: Resume optimization process completed');
       setIsLoading(false);
     }
   };
