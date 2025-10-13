@@ -5,7 +5,6 @@
 .env.production.local
 my-key.pem
 node_modules
-dist
 tstex_modules
 output
 uploads
