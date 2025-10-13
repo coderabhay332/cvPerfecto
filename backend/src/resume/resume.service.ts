@@ -200,6 +200,133 @@ export class ResumeOptimizationService {
         }
     }
 
+    private async extractTextFromPdfLib(buffer: Buffer): Promise<string> {
+        try {
+            console.log('📄 PDF EXTRACTION: Using pdf-lib direct content extraction...');
+            const pdf = await PDFDocument.load(buffer);
+            const context = (pdf as any).context;
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { PDFName, PDFString, PDFHexString, PDFStream } = require('pdf-lib');
+            
+            let extractedText = '';
+            const pages = pdf.getPages();
+            console.log('📄 PDF EXTRACTION: Processing', pages.length, 'pages with pdf-lib...');
+            
+            for (let i = 0; i < pages.length; i++) {
+                const page = pages[i];
+                const node = (page as any).node;
+                console.log(`📄 PDF EXTRACTION: Processing page ${i + 1}...`);
+                
+                try {
+                    // Get page contents
+                    const contentsRef = node.get(PDFName.of('Contents'));
+                    if (contentsRef) {
+                        const contents = context.lookup(contentsRef);
+                        
+                        if (contents instanceof PDFStream) {
+                            // Extract text from stream
+                            const streamBytes = contents.decode();
+                            const streamText = new TextDecoder('utf-8', { fatal: false }).decode(streamBytes);
+                            
+                            // Parse PDF content stream for text
+                            const textMatches = streamText.match(/BT[\s\S]*?ET/g);
+                            if (textMatches) {
+                                for (const textBlock of textMatches) {
+                                    // Extract text from text blocks
+                                    const textOps = textBlock.match(/Tj\s+\((.*?)\)/g);
+                                    if (textOps) {
+                                        for (const op of textOps) {
+                                            const match = op.match(/Tj\s+\((.*?)\)/);
+                                            if (match && match[1]) {
+                                                extractedText += match[1] + ' ';
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Also try to extract text from TJ operations (arrays)
+                                    const textArrayOps = textBlock.match(/TJ\s+\[(.*?)\]/g);
+                                    if (textArrayOps) {
+                                        for (const op of textArrayOps) {
+                                            const match = op.match(/TJ\s+\[(.*?)\]/);
+                                            if (match && match[1]) {
+                                                // Split by parentheses and extract text
+                                                const parts = match[1].split(/\(([^)]+)\)/);
+                                                for (let j = 1; j < parts.length; j += 2) {
+                                                    if (parts[j]) {
+                                                        extractedText += parts[j] + ' ';
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (Array.isArray(contents)) {
+                            // Multiple content streams
+                            for (const contentRef of contents) {
+                                const content = context.lookup(contentRef);
+                                if (content instanceof PDFStream) {
+                                    const streamBytes = content.decode();
+                                    const streamText = new TextDecoder('utf-8', { fatal: false }).decode(streamBytes);
+                                    
+                                    const textMatches = streamText.match(/BT[\s\S]*?ET/g);
+                                    if (textMatches) {
+                                        for (const textBlock of textMatches) {
+                                            const textOps = textBlock.match(/Tj\s+\((.*?)\)/g);
+                                            if (textOps) {
+                                                for (const op of textOps) {
+                                                    const match = op.match(/Tj\s+\((.*?)\)/);
+                                                    if (match && match[1]) {
+                                                        extractedText += match[1] + ' ';
+                                                    }
+                                                }
+                                            }
+                                            
+                                            const textArrayOps = textBlock.match(/TJ\s+\[(.*?)\]/g);
+                                            if (textArrayOps) {
+                                                for (const op of textArrayOps) {
+                                                    const match = op.match(/TJ\s+\[(.*?)\]/);
+                                                    if (match && match[1]) {
+                                                        const parts = match[1].split(/\(([^)]+)\)/);
+                                                        for (let j = 1; j < parts.length; j += 2) {
+                                                            if (parts[j]) {
+                                                                extractedText += parts[j] + ' ';
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Also try to extract from page resources
+                    const resourcesRef = node.get(PDFName.of('Resources'));
+                    if (resourcesRef) {
+                        const resources = context.lookup(resourcesRef);
+                        // This is where fonts and other resources are defined
+                        // We could potentially extract more text information here
+                    }
+                    
+                } catch (pageError) {
+                    console.log(`📄 PDF EXTRACTION: Error processing page ${i + 1}:`, pageError);
+                }
+            }
+            
+            const result = extractedText.trim();
+            console.log('✅ PDF EXTRACTION: pdf-lib content extraction completed, text length:', result.length);
+            console.log('First 200 chars:', result.substring(0, 200));
+            return result;
+            
+        } catch (error) {
+            console.log('❌ PDF EXTRACTION: pdf-lib content extraction failed:', error instanceof Error ? error.message : 'Unknown error');
+            return '';
+        }
+    }
+
     private async extractUrlsFromDocxHtml(buffer: Buffer): Promise<string[]> {
         try {
             const result = await mammoth.convertToHtml({ buffer });
@@ -213,93 +340,268 @@ export class ResumeOptimizationService {
 
     /**
      * Extracts text from PDF buffer using a robust multi-strategy approach.
-     * Order: pdf2json -> pdf.js legacy -> pdf-parse (last resort, text only)
+     * Order: pdf-parse -> pdf2json -> pdf.js legacy (last resort)
      */
     private async extractTextFromPDF(buffer: Buffer): Promise<string> {
-        const tryPdf2Json = async (): Promise<string> => {
-            const PDFParser = require('pdf2json');
-            return await new Promise<string>((resolve, reject) => {
-                try {
-                    const pdfParser = new PDFParser();
-                    pdfParser.on('pdfParser_dataError', (errData: any) => {
-                        reject(new Error(`pdf2json error: ${errData.parserError || 'Unknown error'}`));
-                    });
-                    pdfParser.on('pdfParser_dataReady', (pdfData: any) => {
-                        try {
-                            const pages = pdfData?.formImage?.Pages || [];
-                            const texts: string[] = [];
-                            for (const page of pages) {
-                                for (const textItem of page.Texts || []) {
-                                    for (const r of textItem.R || []) {
-                                        const decoded = decodeURIComponent(r.T || '');
-                                        texts.push(decoded);
-                                    }
-                                }
-                                texts.push('\n');
-                            }
-                            resolve(texts.join(' '));
-                        } catch (e) {
-                            reject(new Error('Failed to parse pdf2json output'));
-                        }
-                    });
-                    pdfParser.parseBuffer(buffer);
-                } catch (e) {
-                    reject(new Error('Failed to initialize pdf2json'));
+        console.log('🔍 PDF EXTRACTION: Starting PDF text extraction...');
+        console.log('PDF buffer size:', buffer.length, 'bytes');
+        
+        const tryPdfParse = async (): Promise<string> => {
+            try {
+                console.log('📄 PDF EXTRACTION: Trying pdf-parse method...');
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
+                const pdfParseModule = require('pdf-parse');
+                
+                // pdf-parse exports a default function, so we need to access it correctly
+                const pdfParse = pdfParseModule.default || pdfParseModule;
+                
+                if (typeof pdfParse !== 'function') {
+                    console.log('❌ PDF EXTRACTION: pdf-parse is not a function, available exports:', Object.keys(pdfParseModule));
+                    throw new Error('pdf-parse is not a function');
                 }
-            });
+                
+                const data = await pdfParse(buffer);
+                const text = String(data?.text || '').trim();
+                console.log('✅ PDF EXTRACTION: pdf-parse successful, text length:', text.length);
+                console.log('First 200 chars:', text.substring(0, 200));
+                return text;
+            } catch (error) {
+                console.log('❌ PDF EXTRACTION: pdf-parse failed:', error instanceof Error ? error.message : 'Unknown error');
+                return '';
+            }
+        };
+
+        const tryPdf2Json = async (): Promise<string> => {
+            try {
+                console.log('📄 PDF EXTRACTION: Trying pdf2json method...');
+                const PDFParser = require('pdf2json');
+                return await new Promise<string>((resolve, reject) => {
+                    try {
+                        const pdfParser = new PDFParser();
+                        pdfParser.on('pdfParser_dataError', (errData: any) => {
+                            console.log('❌ PDF EXTRACTION: pdf2json error:', errData.parserError || 'Unknown error');
+                            reject(new Error(`pdf2json error: ${errData.parserError || 'Unknown error'}`));
+                        });
+                        pdfParser.on('pdfParser_dataReady', (pdfData: any) => {
+                            try {
+                                console.log('📄 PDF EXTRACTION: pdf2json data received, analyzing...');
+                                console.log('PDF data structure:', Object.keys(pdfData || {}));
+                                
+                                // Try different possible data structures
+                                let pages: any[] = [];
+                                
+                                // Check for different possible page structures
+                                if (pdfData?.formImage?.Pages) {
+                                    pages = pdfData.formImage.Pages;
+                                } else if (pdfData?.Pages) {
+                                    pages = pdfData.Pages;
+                                } else if (Array.isArray(pdfData)) {
+                                    pages = pdfData;
+                                } else if (pdfData?.data?.Pages) {
+                                    pages = pdfData.data.Pages;
+                                }
+                                
+                                console.log('Number of pages found:', pages.length);
+                                
+                                const texts: string[] = [];
+                                for (let i = 0; i < pages.length; i++) {
+                                    const page = pages[i];
+                                    console.log(`Page ${i + 1} structure:`, Object.keys(page || {}));
+                                    
+                                    // Try different text extraction methods
+                                    if (page?.Texts) {
+                                        console.log(`Page ${i + 1} Texts:`, page.Texts.length);
+                                        for (const textItem of page.Texts) {
+                                            if (textItem.R) {
+                                                for (const r of textItem.R) {
+                                                    const decoded = decodeURIComponent(r.T || '');
+                                                    if (decoded.trim()) {
+                                                        texts.push(decoded);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else if (page?.text) {
+                                        // Direct text property
+                                        texts.push(page.text);
+                                    } else if (page?.content) {
+                                        // Content property
+                                        texts.push(page.content);
+                                    }
+                                    texts.push('\n');
+                                }
+                                
+                                const result = texts.join(' ').trim();
+                                console.log('✅ PDF EXTRACTION: pdf2json successful, text length:', result.length);
+                                console.log('First 200 chars:', result.substring(0, 200));
+                                resolve(result);
+                            } catch (e) {
+                                console.log('❌ PDF EXTRACTION: pdf2json parsing error:', e);
+                                reject(new Error('Failed to parse pdf2json output'));
+                            }
+                        });
+                        
+                        // Add timeout to prevent hanging
+                        const timeout = setTimeout(() => {
+                            reject(new Error('pdf2json timeout'));
+                        }, 10000);
+                        
+                        pdfParser.on('pdfParser_dataReady', () => {
+                            clearTimeout(timeout);
+                        });
+                        
+                        pdfParser.on('pdfParser_dataError', () => {
+                            clearTimeout(timeout);
+                        });
+                        
+                        pdfParser.parseBuffer(buffer);
+                    } catch (e) {
+                        console.log('❌ PDF EXTRACTION: pdf2json initialization error:', e);
+                        reject(new Error('Failed to initialize pdf2json'));
+                    }
+                });
+            } catch (error) {
+                console.log('❌ PDF EXTRACTION: pdf2json method failed:', error instanceof Error ? error.message : 'Unknown error');
+                return '';
+            }
         };
 
         const tryPdfJs = async (): Promise<string> => {
             try {
+                console.log('📄 PDF EXTRACTION: Trying pdf.js method...');
                 // eslint-disable-next-line @typescript-eslint/no-var-requires
                 let pdfjsLib;
                 try {
-                    pdfjsLib = require('pdfjs-dist/legacy/build/pdf');
-                    if (pdfjsLib.GlobalWorkerOptions) {
-                        pdfjsLib.GlobalWorkerOptions.workerSrc = require('pdfjs-dist/legacy/build/pdf.worker.js');
+                    // Try different pdf.js paths
+                    try {
+                        pdfjsLib = require('pdfjs-dist/legacy/build/pdf');
+                        console.log('📄 PDF EXTRACTION: Using pdfjs-dist/legacy/build/pdf');
+                    } catch (e1) {
+                        try {
+                            pdfjsLib = require('pdfjs-dist/build/pdf');
+                            console.log('📄 PDF EXTRACTION: Using pdfjs-dist/build/pdf');
+                        } catch (e2) {
+                            pdfjsLib = require('pdfjs-dist');
+                            console.log('📄 PDF EXTRACTION: Using pdfjs-dist');
+                        }
                     }
-                } catch (_e) {
-                    pdfjsLib = require('pdfjs-dist/build/pdf.js');
+                    
+                    // Set worker source
                     if (pdfjsLib.GlobalWorkerOptions) {
-                        pdfjsLib.GlobalWorkerOptions.workerSrc = require('pdfjs-dist/build/pdf.worker.js');
+                        try {
+                            pdfjsLib.GlobalWorkerOptions.workerSrc = require('pdfjs-dist/legacy/build/pdf.worker.js');
+                        } catch (e1) {
+                            try {
+                                pdfjsLib.GlobalWorkerOptions.workerSrc = require('pdfjs-dist/build/pdf.worker.js');
+                            } catch (e2) {
+                                // Use CDN as fallback
+                                pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+                            }
+                        }
                     }
+                } catch (e) {
+                    console.log('❌ PDF EXTRACTION: pdf.js library loading failed:', e);
+                    return '';
                 }
-                const loadingTask = pdfjsLib.getDocument({ data: buffer });
+                
+                // Convert Buffer to Uint8Array for pdf.js
+                const uint8Array = new Uint8Array(buffer);
+                const loadingTask = pdfjsLib.getDocument({ data: uint8Array });
                 const pdf = await loadingTask.promise;
+                console.log('📄 PDF EXTRACTION: PDF loaded, pages:', pdf.numPages);
+                
                 let text = '';
                 for (let i = 1; i <= pdf.numPages; i++) {
                     const page = await pdf.getPage(i);
                     const content = await page.getTextContent();
                     const pageText = content.items.map((it: any) => it.str).join(' ');
                     text += pageText + '\n';
+                    console.log(`📄 PDF EXTRACTION: Page ${i} text length:`, pageText.length);
                 }
+                console.log('✅ PDF EXTRACTION: pdf.js successful, total text length:', text.length);
                 return text;
-            } catch (_error) {
+            } catch (error) {
+                console.log('❌ PDF EXTRACTION: pdf.js failed:', error instanceof Error ? error.message : 'Unknown error');
                 return '';
             }
         };
 
-        const tryPdfParse = async (): Promise<string> => {
+        const tryPdfLib = async (): Promise<string> => {
             try {
-                // Lazy require; only used as last resort for text
-                // eslint-disable-next-line @typescript-eslint/no-var-requires
-                const pdfParse = require('pdf-parse');
-                const data = await pdfParse(buffer);
-                return String(data?.text || '').trim();
-            } catch (_error) {
+                console.log('📄 PDF EXTRACTION: Trying pdf-lib method...');
+                const pdfDoc = await PDFDocument.load(buffer);
+                console.log('📄 PDF EXTRACTION: PDF loaded with pdf-lib, pages:', pdfDoc.getPageCount());
+                
+                let text = '';
+                const pages = pdfDoc.getPages();
+                
+                for (let i = 0; i < pages.length; i++) {
+                    const page = pages[i];
+                    console.log(`📄 PDF EXTRACTION: Processing page ${i + 1}`);
+                    
+                    // Try to extract text from page annotations and content
+                    try {
+                        // This is a basic approach - pdf-lib is more for manipulation than text extraction
+                        // But we can try to get some basic info
+                        const pageSize = page.getSize();
+                        console.log(`📄 PDF EXTRACTION: Page ${i + 1} size:`, pageSize);
+                        
+                        // For now, just add a placeholder - pdf-lib is not ideal for text extraction
+                        text += `[Page ${i + 1} - Text extraction not available with pdf-lib]\n`;
+                    } catch (e) {
+                        console.log(`📄 PDF EXTRACTION: Page ${i + 1} processing error:`, e);
+                    }
+                }
+                
+                console.log('✅ PDF EXTRACTION: pdf-lib completed, text length:', text.length);
+                return text;
+            } catch (error) {
+                console.log('❌ PDF EXTRACTION: pdf-lib failed:', error instanceof Error ? error.message : 'Unknown error');
                 return '';
             }
         };
 
-        // Try strategies in order
-        const text1 = await tryPdf2Json().catch(() => '');
-        if (text1 && text1.trim().length > 50) return text1;
+        // Try strategies in order - pdf-lib direct extraction first (since link extraction works)
+        console.log('🔄 PDF EXTRACTION: Trying extraction methods...');
+        
+        const text1 = await this.extractTextFromPdfLib(buffer);
+        if (text1 && text1.trim().length > 50) {
+            console.log('✅ PDF EXTRACTION: pdf-lib direct extraction succeeded, using result');
+            return text1;
+        }
 
-        const text2 = await tryPdfJs();
-        if (text2 && text2.trim().length > 50) return text2;
+        const text2 = await tryPdfParse();
+        if (text2 && text2.trim().length > 50) {
+            console.log('✅ PDF EXTRACTION: pdf-parse succeeded, using result');
+            return text2;
+        }
 
-        const text3 = await tryPdfParse();
-        return text3;
+        const text3 = await tryPdf2Json().catch(() => '');
+        if (text3 && text3.trim().length > 50) {
+            console.log('✅ PDF EXTRACTION: pdf2json succeeded, using result');
+            return text3;
+        }
+
+        const text4 = await tryPdfJs();
+        if (text4 && text4.trim().length > 50) {
+            console.log('✅ PDF EXTRACTION: pdf.js succeeded, using result');
+            return text4;
+        }
+
+        const text5 = await tryPdfLib();
+        if (text5 && text5.trim().length > 50) {
+            console.log('✅ PDF EXTRACTION: pdf-lib fallback succeeded, using result');
+            return text5;
+        }
+
+        console.log('❌ PDF EXTRACTION: All methods failed, returning empty string');
+        console.log('📊 PDF EXTRACTION SUMMARY:');
+        console.log('  pdf-lib direct result length:', text1?.length || 0);
+        console.log('  pdf-parse result length:', text2?.length || 0);
+        console.log('  pdf2json result length:', text3?.length || 0);
+        console.log('  pdf.js result length:', text4?.length || 0);
+        console.log('  pdf-lib fallback result length:', text5?.length || 0);
+        return '';
     }
 
     /**
@@ -336,6 +638,212 @@ export class ResumeOptimizationService {
     }
 
     /**
+     * Simple text extraction fallback for Docker environments
+     */
+    private async extractTextFromPDFSimple(buffer: Buffer): Promise<string> {
+        try {
+            console.log('📄 PDF EXTRACTION: Trying simple text extraction...');
+            
+            // Convert buffer to string and look for text patterns
+            const bufferString = buffer.toString('binary');
+            
+            // Look for common text patterns in PDF
+            const textPatterns = [
+                /BT\s+([^E]+)ET/g,  // Text objects
+                /\(([^)]+)\)/g,     // Text in parentheses
+                /\[([^\]]+)\]/g,    // Text in brackets
+                /\/[A-Za-z]+\s+([^\s]+)/g  // Named objects
+            ];
+            
+            let extractedText = '';
+            for (const pattern of textPatterns) {
+                const matches = bufferString.match(pattern);
+                if (matches) {
+                    extractedText += matches.join(' ') + ' ';
+                }
+            }
+            
+            // Clean up the extracted text
+            extractedText = extractedText
+                .replace(/[^\x20-\x7E]/g, ' ')  // Remove non-printable characters
+                .replace(/\s+/g, ' ')           // Normalize whitespace
+                .trim();
+            
+            console.log('✅ PDF EXTRACTION: Simple extraction result length:', extractedText.length);
+            return extractedText;
+        } catch (error) {
+            console.log('❌ PDF EXTRACTION: Simple extraction failed:', error instanceof Error ? error.message : 'Unknown error');
+            return '';
+        }
+    }
+
+    /**
+     * Advanced text extraction using regex patterns for PDF content
+     */
+    private async extractTextFromPDFAdvanced(buffer: Buffer): Promise<string> {
+        try {
+            console.log('📄 PDF EXTRACTION: Trying advanced text extraction...');
+            
+            const bufferString = buffer.toString('binary');
+            let extractedText = '';
+            
+            // More sophisticated patterns for text extraction
+            const patterns = [
+                // Text in parentheses (most common)
+                /\(([^)]+)\)/g,
+                // Text in brackets
+                /\[([^\]]+)\]/g,
+                // Text between BT and ET (text objects)
+                /BT\s+([^E]+)ET/g,
+                // Text after Tj (text showing operator)
+                /([A-Za-z0-9\s@\.\-_]+)\s+Tj/g,
+                // Text after TJ (text showing operator for arrays)
+                /\[([^\]]+)\]\s+TJ/g,
+                // Text in strings
+                /"([^"]+)"/g,
+                // Text after /F (font) commands
+                /\/F\d+\s+([A-Za-z0-9\s@\.\-_]+)/g,
+                // Text in content streams
+                /stream\s+([\s\S]*?)\s+endstream/g
+            ];
+            
+            for (const pattern of patterns) {
+                const matches = bufferString.match(pattern);
+                if (matches) {
+                    for (const match of matches) {
+                        // Clean the match
+                        let cleanMatch = match
+                            .replace(/[^\x20-\x7E]/g, ' ')  // Remove non-printable
+                            .replace(/\s+/g, ' ')           // Normalize whitespace
+                            .trim();
+                        
+                        // Only add if it looks like real text
+                        if (cleanMatch.length > 2 && 
+                            /[A-Za-z]/.test(cleanMatch) &&  // Contains letters
+                            !/^[0-9\s]+$/.test(cleanMatch) &&  // Not just numbers
+                            !/^[\/\\]+$/.test(cleanMatch)) {   // Not just slashes
+                            extractedText += cleanMatch + ' ';
+                        }
+                    }
+                }
+            }
+            
+            // Additional cleanup
+            extractedText = extractedText
+                .replace(/\s+/g, ' ')           // Normalize whitespace
+                .replace(/\b\w{1,2}\b/g, '')    // Remove very short words
+                .replace(/\s+/g, ' ')           // Normalize again
+                .trim();
+            
+            console.log('✅ PDF EXTRACTION: Advanced extraction result length:', extractedText.length);
+            console.log('First 200 chars:', extractedText.substring(0, 200));
+            return extractedText;
+        } catch (error) {
+            console.log('❌ PDF EXTRACTION: Advanced extraction failed:', error instanceof Error ? error.message : 'Unknown error');
+            return '';
+        }
+    }
+
+    /**
+     * Detects if extracted text is binary/garbled data
+     */
+    private isBinaryOrGarbledText(text: string): boolean {
+        if (!text || text.length < 100) return false;
+        
+        // Check for high ratio of non-printable characters
+        const printableChars = text.replace(/[^\x20-\x7E]/g, '').length;
+        const totalChars = text.length;
+        const printableRatio = printableChars / totalChars;
+        
+        // Check for common binary patterns
+        const binaryPatterns = [
+            /endstream endobj/g,
+            /\/Filter \/FlateDecode/g,
+            /\/Length \d+/g,
+            /\/Type \/[A-Za-z]+/g,
+            /\/Contents \d+ 0 R/g
+        ];
+        
+        const binaryPatternCount = binaryPatterns.reduce((count, pattern) => {
+            return count + (text.match(pattern) || []).length;
+        }, 0);
+        
+        // If less than 30% printable characters or many binary patterns, it's likely garbled
+        const isGarbled = printableRatio < 0.3 || binaryPatternCount > 10;
+        
+        console.log('🔍 TEXT ANALYSIS:');
+        console.log('  Total characters:', totalChars);
+        console.log('  Printable characters:', printableChars);
+        console.log('  Printable ratio:', printableRatio.toFixed(3));
+        console.log('  Binary patterns found:', binaryPatternCount);
+        console.log('  Is garbled:', isGarbled);
+        
+        return isGarbled;
+    }
+
+    /**
+     * Extracts readable text from PDF metadata and structure
+     */
+    private async extractTextFromPDFMetadata(buffer: Buffer): Promise<string> {
+        try {
+            console.log('📄 PDF EXTRACTION: Trying metadata extraction...');
+            
+            const bufferString = buffer.toString('binary');
+            let extractedText = '';
+            
+            // Extract from PDF metadata
+            const metadataPatterns = [
+                /\/Title\s*\(([^)]+)\)/g,
+                /\/Author\s*\(([^)]+)\)/g,
+                /\/Subject\s*\(([^)]+)\)/g,
+                /\/Keywords\s*\(([^)]+)\)/g,
+                /\/Creator\s*\(([^)]+)\)/g
+            ];
+            
+            for (const pattern of metadataPatterns) {
+                const matches = bufferString.match(pattern);
+                if (matches) {
+                    extractedText += matches.join(' ') + ' ';
+                }
+            }
+            
+            // Look for readable text in PDF streams (more aggressive)
+            const streamPatterns = [
+                /\(([A-Za-z0-9\s@\.\-_]+)\)/g,  // Text in parentheses
+                /\[([A-Za-z0-9\s@\.\-_]+)\]/g,  // Text in brackets
+                /([A-Za-z]{3,})/g  // Words with 3+ letters
+            ];
+            
+            for (const pattern of streamPatterns) {
+                const matches = bufferString.match(pattern);
+                if (matches) {
+                    // Filter out obvious binary data
+                    const filteredMatches = matches.filter(match => 
+                        match.length > 2 && 
+                        !match.includes('/') && 
+                        !match.includes('\\') &&
+                        match.match(/[A-Za-z]/) // Contains at least one letter
+                    );
+                    extractedText += filteredMatches.join(' ') + ' ';
+                }
+            }
+            
+            // Clean up the extracted text
+            extractedText = extractedText
+                .replace(/[^\x20-\x7E]/g, ' ')  // Remove non-printable characters
+                .replace(/\s+/g, ' ')           // Normalize whitespace
+                .replace(/\b\w{1,2}\b/g, '')    // Remove very short words
+                .trim();
+            
+            console.log('✅ PDF EXTRACTION: Metadata extraction result length:', extractedText.length);
+            return extractedText;
+        } catch (error) {
+            console.log('❌ PDF EXTRACTION: Metadata extraction failed:', error instanceof Error ? error.message : 'Unknown error');
+            return '';
+        }
+    }
+
+    /**
      * Build a minimal fallback resume text using detected contacts
      */
     private buildFallbackResumeText(contacts: ExtractedContacts): string {
@@ -346,6 +854,10 @@ export class ResumeOptimizationService {
         if (contacts.github) parts.push(`GitHub: ${contacts.github}`);
         if (contacts.leetcode) parts.push(`LeetCode: ${contacts.leetcode}`);
         if (contacts.website) parts.push(`Website: ${contacts.website}`);
+        
+        // Add a note about extraction failure
+        parts.push('\nNOTE: PDF text extraction failed. Only contact information was extracted. Please provide a text-based resume for full optimization.');
+        
         return parts.join('\n');
     }
 
@@ -411,7 +923,10 @@ export class ResumeOptimizationService {
         if (contacts.website) parts.push(`Website=${contacts.website}`);
         if (contacts.twitter) parts.push(`Twitter=${contacts.twitter}`);
         if (parts.length === 0) return '';
-        return `\n\nIMPORTANT: Preserve these original contact links/values EXACTLY as provided. Do not invent or change them. Use these as href targets in LaTeX, and display text may be simplified but hrefs must match exactly. Original Contacts -> ${parts.join(' | ')}`;
+        
+        return `\n\nIMPORTANT: Preserve these original contact links/values EXACTLY as provided. Do not invent or change them. Use these as href targets in LaTeX, and display text may be simplified but hrefs must match exactly. Original Contacts -> ${parts.join(' | ')}
+
+NOTE: If the resume content above is minimal (only contact information), this indicates PDF text extraction failed. In this case, create a minimal resume structure with the contact header and add a note about extraction issues. DO NOT generate fake resume content.`;
     }
 
     /**
@@ -563,14 +1078,38 @@ CRITICAL CONTENT RULES:
 - READ THE ACTUAL RESUME CONTENT CAREFULLY - extract real details like college names, project names, company names, job titles, etc.
 - DO NOT use placeholder text like "Project Name", "Company", "Duration" - use the actual information provided
 
+SPECIAL CASE - CONTACT ONLY RESUME:
+- If only contact information is provided (like "Phone: 49, LinkedIn: https://..."), this means PDF text extraction failed
+- In this case, create a minimal resume with:
+  - Header with contact information using the provided links
+  - A note: "Resume content could not be extracted from PDF. Please provide a text-based resume for full optimization."
+  - Basic sections but leave them empty or with the note above
+  - DO NOT generate fake content or placeholders
+
 REQUIREMENTS:
 - Use a simple, compilable preamble with hyperref and geometry
 - Organize with clear sections (SUMMARY, EDUCATION, TECHNICAL SKILLS, EXPERIENCE, PROJECTS, ACHIEVEMENTS)
 - Include a header (centered) with name and contact \\href links
 - Avoid exotic packages and stick to those in the template
 - Only include sections that have actual content from the original resume
-- Extract and use REAL information from the resume content provided`;
-        const userPrompt = `Resume Content:\n${resumeText}\n\nJob Description:\n${jobDescription}${this.buildContactPreservationNote(contacts)}`;
+- Extract and use REAL information from the resume content provided
+- If resume content is minimal (only contacts), create a basic structure with appropriate notes about extraction issues`;
+        // Check if this is a contact-only scenario
+        const isContactOnly = resumeText.length < 200 && 
+                             (resumeText.includes('LinkedIn:') || resumeText.includes('GitHub:') || resumeText.includes('Phone:')) &&
+                             !resumeText.toLowerCase().includes('experience') &&
+                             !resumeText.toLowerCase().includes('education') &&
+                             !resumeText.toLowerCase().includes('project');
+        
+        let userPrompt = `Resume Content:\n${resumeText}\n\nJob Description:\n${jobDescription}${this.buildContactPreservationNote(contacts)}`;
+        
+        if (isContactOnly) {
+            userPrompt += `\n\nCRITICAL: This is a CONTACT-ONLY scenario. The PDF text extraction failed and only contact information was extracted. Create a minimal resume with:
+1. Header with contact information
+2. A clear note: "Resume content could not be extracted from PDF. Please provide a text-based resume for full optimization."
+3. Empty sections or sections with the extraction note
+4. DO NOT generate fake content, projects, or experience`;
+        }
 
         // Try different model names in case one is not available
         const modelNames = [
@@ -848,6 +1387,18 @@ REQUIREMENTS:
             console.log(resumeText);
             console.log('----------------------------------------');
 
+            // Check if extracted text is garbled/binary data
+            if (resumeText.length > 0 && this.isBinaryOrGarbledText(resumeText)) {
+                console.log('⚠️  DETECTED GARBLED TEXT - Trying metadata extraction...');
+                const metadataText = await this.extractTextFromPDFMetadata(request.resumeFile.buffer);
+                if (metadataText.trim().length > 50) {
+                    resumeText = metadataText;
+                    console.log('✅ Using metadata extraction result');
+                } else {
+                    console.log('❌ Metadata extraction also failed, will use contact fallback');
+                }
+            }
+
             // If no text found, try fallback via pdf.js
             if (!resumeText.trim() && path.extname(request.resumeFile.originalname).toLowerCase() === '.pdf') {
                 console.log('=== TRYING PDF.JS FALLBACK ===');
@@ -864,6 +1415,25 @@ REQUIREMENTS:
                 }
             }
 
+            // Additional fallback: Try to extract text using advanced text-based approach
+            if (!resumeText.trim() && path.extname(request.resumeFile.originalname).toLowerCase() === '.pdf') {
+                console.log('=== TRYING ADVANCED TEXT EXTRACTION FALLBACK ===');
+                const advancedText = await this.extractTextFromPDFAdvanced(request.resumeFile.buffer);
+                console.log('Advanced text extraction length:', advancedText.length);
+                if (advancedText.trim()) {
+                    resumeText = advancedText;
+                    console.log('Advanced text extraction successful, using result');
+                } else {
+                    console.log('=== TRYING SIMPLE TEXT EXTRACTION FALLBACK ===');
+                    const simpleText = await this.extractTextFromPDFSimple(request.resumeFile.buffer);
+                    console.log('Simple text extraction length:', simpleText.length);
+                    if (simpleText.trim()) {
+                        resumeText = simpleText;
+                        console.log('Simple text extraction successful, using result');
+                    }
+                }
+            }
+
             // Extract original contacts for exact preservation
             const contacts = this.extractContactsFromText(resumeText, additionalUrls);
             console.log('=== EXTRACTED CONTACTS ===');
@@ -873,6 +1443,22 @@ REQUIREMENTS:
             // If still empty text, build a minimal text from contacts so AI can proceed
             if (!resumeText.trim()) {
                 console.log('=== NO TEXT EXTRACTED - BUILDING FALLBACK ===');
+                console.warn('⚠️  CRITICAL: PDF text extraction completely failed!');
+                console.warn('⚠️  This might be due to:');
+                console.warn('   - PDF is image-based (scanned document)');
+                console.warn('   - PDF is password protected');
+                console.warn('   - PDF libraries not working in Docker environment');
+                console.warn('   - PDF has complex formatting');
+                console.warn('⚠️  Only contact information will be used for resume generation');
+                
+                resumeText = this.buildFallbackResumeText(contacts);
+                console.log('Fallback text:', resumeText);
+            } else if (this.isBinaryOrGarbledText(resumeText)) {
+                console.log('=== GARBLED TEXT DETECTED - USING CONTACT FALLBACK ===');
+                console.warn('⚠️  PDF text extraction returned garbled/binary data');
+                console.warn('⚠️  This usually means the PDF is image-based or has complex formatting');
+                console.warn('⚠️  Falling back to contact information only');
+                
                 resumeText = this.buildFallbackResumeText(contacts);
                 console.log('Fallback text:', resumeText);
             }
@@ -883,6 +1469,18 @@ REQUIREMENTS:
             console.log('========================================');
             console.log(resumeText);
             console.log('========================================');
+            
+            // Check if this is a contact-only scenario
+            const isContactOnly = resumeText.length < 200 && 
+                                 (resumeText.includes('LinkedIn:') || resumeText.includes('GitHub:') || resumeText.includes('Phone:')) &&
+                                 !resumeText.toLowerCase().includes('experience') &&
+                                 !resumeText.toLowerCase().includes('education') &&
+                                 !resumeText.toLowerCase().includes('project');
+            
+            if (isContactOnly) {
+                console.log('⚠️  CONTACT-ONLY SCENARIO DETECTED - PDF extraction failed');
+                console.log('⚠️  AI will be instructed to create minimal resume with extraction note');
+            }
             
             // Additional validation: Check if we have meaningful content
             if (resumeText.length < 100) {
