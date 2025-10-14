@@ -62,7 +62,6 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     return new (P || (P = Promise))(function (resolve, reject) {
         function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
         function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
-        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
@@ -83,8 +82,6 @@ const database_services_1 = require("./src/common/services/database.services");
 const passport_jwt_services_1 = require("./src/common/services/passport-jwt.services");
 const routes_1 = __importDefault(require("./src/routes"));
 
-const port = (_a = Number(process.env.PORT)) !== null && _a !== void 0 ? _a : 5000;
-
 const app = (0, express_1.default)();
 
 // Middlewares
@@ -101,24 +98,29 @@ app.use((0, morgan_1.default)("dev"));
 
 // Initialize app
 const initApp = () => __awaiter(void 0, void 0, void 0, function* () {
+    // Connect to MongoDB
     yield (0, database_services_1.initDB)();
+
+    // Initialize Passport
     (0, passport_jwt_services_1.initPassport)();
 
+    // API routes
     app.use("/api", routes_1.default);
+
+    // Root route
     app.get("/", (req, res) => {
         res.status(200).json({ status: "ok", message: "Server running successfully!" });
     });
 
-    // Error handler
+    // Global error handler
     app.use(error_handler_1.default);
 });
 
-// Initialize app only once
+// Run initialization
 void initApp();
 
-// ✅ Export app for Vercel (serverless)
+// ✅ Export app for Vercel serverless
 module.exports = app;
-
 
 
 
