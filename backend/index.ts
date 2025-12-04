@@ -28,7 +28,7 @@ declare global {
   app.use(express.json()); // Parses JSON bodies
 
   app.use(cors({
-  origin: 'http://localhost:3000', // specify exact origin
+  origin: ['http://localhost:3000', "https://cvperfecto.space"], // specify exact origin
   credentials: true // allow credentials
 }));
   app.use(helmet()) 
