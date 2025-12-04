@@ -40,7 +40,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT || '22' }}
           script: |
-            cd //home/ubuntu/cvPerfecto
+            cd //home/ubuntu/cvPerfecto/backend
             echo "${{ secrets.BACKEND_ENV }}" > .env
             git pull origin master
             cd backend
