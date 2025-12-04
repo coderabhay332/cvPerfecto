@@ -19,11 +19,9 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-# Copy only what we need at runtime
 COPY --from=build /app/package*.json ./
 
 
-# App code (compiled) and any runtime-needed assets/templates
 COPY --from=build /app/dist ./dist
 # Your app loads template/assets from src at runtime; include them
 COPY --from=build /app/src ./src
