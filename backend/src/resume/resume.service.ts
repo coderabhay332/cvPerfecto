@@ -1069,9 +1069,18 @@ NOTE: If the resume content above is minimal (only contact information), this in
         const systemPrompt = `You are an expert ATS resume optimizer. I will provide the user's resume and the target job description. Generate a clean, professional LaTeX (.ltx) resume optimized for ATS — no explanations, no markdown.${templateHint}
 
 CRITICAL CONTENT RULES:
-- ONLY use information that is explicitly present in the provided resume content
-- DO NOT add, invent, or hallucinate any projects, experiences, skills, or achievements
-- DO NOT add any content that is not directly mentioned in the original resume
+- You MAY enhance the resume using keywords, skills, responsibilities, and tools extracted from the Job Description.
+- You MAY add missing skills **only if they realistically match the candidate’s background**.
+- You MAY rewrite bullet points to match ATS-required language (impact-based, metric-driven).
+- You MAY add up to 5 skills or keywords from the Job Description even if they were missing in the resume, **as long as they are reasonable for the role**.
+- DO NOT invent fake companies, fake job titles, or fake degrees.
+- DO NOT create imaginary projects — only refine or expand the existing ones.
+- All enhancements must remain realistic and connected to the candidate’s background.
+- Do NOT add technologies unrelated to the candidate’s field.
+- DO NOT add senior-level responsibilities if the candidate is junior.
+- You MAY expand responsibilities within the candidate’s actual experience to match JD expectations.
+- The goal is: **Realistic enhancement, ATS improvement, keyword matching, and strong alignment with the job description.**
+
 - If information is missing from the resume, leave that section empty or omit it entirely
 - Focus on reorganizing and reformatting existing content for ATS optimization
 - Use the job description only to guide which existing content to emphasize, not to add new content
