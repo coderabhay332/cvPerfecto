@@ -6,7 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { resumeAPI, ResumeOptimizationData } from '../services/api';
 import FileUpload from '../components/FileUpload';
 import ResumeResults from '../components/ResumeResults';
-import { LogOut, User, FileText, Upload, AlertCircle, CheckCircle, Sparkles, Zap } from 'lucide-react';
+import { FileText, Upload, AlertCircle, CheckCircle, Sparkles, Zap } from 'lucide-react';
 
 export default function DashboardPage() {
   const [jobDescription, setJobDescription] = useState('');
@@ -15,7 +15,7 @@ export default function DashboardPage() {
   const [results, setResults] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
-  const { user, logout, isAuthenticated } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -108,10 +108,6 @@ export default function DashboardPage() {
     }
   };
 
-  const handleLogout = () => {
-    logout();
-    router.push('/login');
-  };
 
   if (!isAuthenticated) {
     return (
@@ -133,36 +129,6 @@ export default function DashboardPage() {
         <div className="absolute -bottom-20 left-1/3 w-96 h-96 bg-cyan-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse" style={{ animationDelay: '4s' }}></div>
       </div>
 
-      {/* Header */}
-      <header className="relative z-10 bg-white/80 backdrop-blur-lg shadow-lg border-b border-emerald-100/50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
-              <div className="bg-gradient-to-br from-emerald-400 to-teal-500 rounded-xl p-2 shadow-lg">
-                <FileText className="h-6 w-6 text-white" />
-              </div>
-              <h1 className="text-xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent">
-                CV Perfecto
-              </h1>
-            </div>
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2 bg-emerald-50/50 px-4 py-2 rounded-xl border border-emerald-200">
-                <div className="bg-gradient-to-br from-emerald-400 to-teal-500 rounded-lg p-1.5">
-                  <User className="h-4 w-4 text-white" />
-                </div>
-                <span className="text-sm font-medium text-gray-700">{user?.name}</span>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-gray-700 hover:text-emerald-700 bg-white/50 hover:bg-emerald-50 rounded-xl transition-all duration-200 border border-gray-200 hover:border-emerald-300 shadow-sm hover:shadow-md"
-              >
-                <LogOut className="h-4 w-4" />
-                <span>Logout</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
 
       {/* Main Content */}
       <main className="relative z-10 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">

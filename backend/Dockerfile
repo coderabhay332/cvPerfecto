@@ -5,8 +5,8 @@ WORKDIR /app
 
 # Install dependencies (include dev deps for TypeScript build)
 COPY package*.json ./
-RUN npm ci --omit=dev=false
 
+RUN npm install
 # Copy source and build
 COPY . ./
 RUN npm run build
@@ -22,7 +22,7 @@ WORKDIR /app
 
 # Copy only what we need at runtime
 COPY --from=build /app/package*.json ./
-RUN npm ci --omit=dev
+
 
 # App code (compiled) and any runtime-needed assets/templates
 COPY --from=build /app/dist ./dist
