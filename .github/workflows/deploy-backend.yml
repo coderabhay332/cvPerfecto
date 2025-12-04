@@ -36,11 +36,12 @@ jobs:
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.SERVER_HOST || '34.226.234.127' }}
-          username: root
+          username: ubuntu  
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT || '22' }}
           script: |
-            cd /root/cvPerfecto
+            cd //home/ubuntu/cvPerfecto
+            echo "${{ secrets.BACKEND_ENV }}" > .env
             git pull origin master
             cd backend
             npm install
