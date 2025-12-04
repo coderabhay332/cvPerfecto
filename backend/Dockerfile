@@ -3,7 +3,6 @@ FROM node:20-bullseye-slim AS build
 
 WORKDIR /app
 
-# Install dependencies (include dev deps for TypeScript build)
 COPY package*.json ./
 
 RUN npm install
